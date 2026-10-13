@@ -291,8 +291,6 @@ code{background:rgba(255,255,255,.08);padding:1px 6px;border-radius:6px;font-siz
 .doc .kv dt{color:#666}
 .doc-preview{background:#fff;border-radius:12px;overflow:auto;max-height:60vh}
 .doc-preview .doc{transform-origin:top left}
-body.live .demo-tag{display:none!important}
-.live-login{max-width:380px;margin:12vh auto;padding:24px}
 </style>
 </head>
 <body>
@@ -336,17 +334,7 @@ const APP_CONFIG = {
   shifts: { D: { name: "Diurno", start: 7, count: 12 }, N: { name: "Nocturno", start: 19, count: 12 } }
 };
 const CONFIG_KEY = "rg_config_v1", STATE_KEY = "rg_demo_state_v1";
-let CURRENT_USER = "Supervisor (demo)"; // En modo conectado: nombre devuelto por el servidor tras iniciar sesión.
-const isLive = () => !APP_CONFIG.useDemoData;
-const HIDDEN_LIVE = ["conceptos","calendario","exportar"]; // fuera del control de reportes (no se borran: solo se ocultan)
-const LIVE = { desde:"", hasta:"" };
-const SESSION = {
-  get token(){ try{ return sessionStorage.getItem("rg_tok")||""; }catch(e){ return ""; } },
-  get name(){ try{ return sessionStorage.getItem("rg_usr")||""; }catch(e){ return ""; } },
-  get rol(){ try{ return sessionStorage.getItem("rg_rol")||""; }catch(e){ return ""; } },
-  set(t,n,r){ try{ sessionStorage.setItem("rg_tok",t); sessionStorage.setItem("rg_usr",n); sessionStorage.setItem("rg_rol",r); }catch(e){} CURRENT_USER=n; },
-  clear(){ try{ sessionStorage.removeItem("rg_tok"); sessionStorage.removeItem("rg_usr"); sessionStorage.removeItem("rg_rol"); }catch(e){} }
-};
+const CURRENT_USER = "Supervisor (demo)"; // En producción: identidad validada por Apps Script.
 
 (function loadConfig(){ try{ const s = JSON.parse(localStorage.getItem(CONFIG_KEY)||"null"); if(s) Object.assign(APP_CONFIG, s, {shifts: Object.assign({}, APP_CONFIG.shifts, s.shifts||{})}); }catch(e){} })();
 function saveConfigLocal(){ try{ localStorage.setItem(CONFIG_KEY, JSON.stringify(APP_CONFIG)); }catch(e){} }
@@ -465,9 +453,9 @@ function mkEvidence(a,iv,r){ const s=slotsFor(iv.shift)[iv.idx]; const d=s.nextD
   const ev = { id:"EV-"+(S.evidences.length+1001), agentId:a.id, unitId:a.unitId, shift:iv.shift, opDate:iv.opDate, slotKey:null,
     receivedAt:limaISO(d,s.hour,Math.floor(r()*55)), type:r()<.12?"Video":"Fotografía", gps:r()<.7?"-12.0000, -77.0000 (ejemplo)":"", address:"", status:"Sin asignar", notes:"", telegramRef:"", demo:true };
   if(ev.gps) ev.address="Dirección aproximada de ejemplo"; S.evidences.push(ev); return ev; }
-function ensureIntervals(date){ if(isLive()&&(date<LIVE.desde||date>LIVE.hasta)) return; S.agents.filter(a=>a.status==="Activo"&&(!isLive()||!a.start||a.start<=date)).forEach(a=>slotsFor(a.shift).forEach(s=>mkInterval(date,a,s.idx))); }
-function persist(){ if(isLive()) return; try{ localStorage.setItem(STATE_KEY, JSON.stringify(S)); }catch(e){ console.warn("No se pudo guardar el estado demo", e); } }
-function audit(user,action,record,detail){ if(isLive()) return; S.audit.unshift({id:uid("AU"),at:new Date().toISOString(),user,action,record,detail}); }
+function ensureIntervals(date){ S.agents.filter(a=>a.status==="Activo").forEach(a=>slotsFor(a.shift).forEach(s=>mkInterval(date,a,s.idx))); }
+function persist(){ try{ localStorage.setItem(STATE_KEY, JSON.stringify(S)); }catch(e){ console.warn("No se pudo guardar el estado demo", e); } }
+function audit(user,action,record,detail){ S.audit.unshift({id:uid("AU"),at:new Date().toISOString(),user,action,record,detail}); }
 const agentById = id => S.agents.find(a=>a.id===id);
 const unitById = id => S.units.find(u=>u.id===id);
 const fullName = a => a? `${a.first} ${a.last}`: "—";
@@ -488,25 +476,22 @@ async function apiCall(action, payload={}){
   if(APP_CONFIG.useDemoData) throw new Error("Modo demostración: no hay conexión con el backend.");
   if(!isValidUrl(APP_CONFIG.googleAppsScriptUrl)) throw new Error("Requiere configuración: falta la URL del despliegue de Google Apps Script.");
   let res;
-  try{ res = await fetch(APP_CONFIG.googleAppsScriptUrl,{method:"POST",headers:{"Content-Type":"text/plain;charset=utf-8"},body:JSON.stringify({action,payload,auth:SESSION.token||undefined})}); }
+  try{ res = await fetch(APP_CONFIG.googleAppsScriptUrl,{method:"POST",headers:{"Content-Type":"text/plain;charset=utf-8"},body:JSON.stringify({action,payload})}); }
   catch(e){ throw new Error("Error de red al contactar Apps Script (revisa publicación, permisos y acceso)."); }
   if(!res.ok) throw new Error(`El servidor respondió ${res.status}.`);
   let data; try{ data = await res.json(); }catch(e){ throw new Error("Respuesta no válida del servidor (se esperaba JSON)."); }
-  if(data && data.ok===false){ const er=new Error(data.error||"Error del servidor."); er.authRequired=!!data.authRequired; if(er.authRequired&&action!=="login"){ SESSION.clear(); setTimeout(()=>showLogin(er.message),0); } throw er; }
+  if(data && data.ok===false) throw new Error(data.error||"Error del servidor.");
   return data;
 }
 const demoDelay = (v,ms=250)=>new Promise(r=>setTimeout(()=>r(v),ms));
-async function loadDashboardData(){ if(APP_CONFIG.useDemoData) return demoDelay(S); return apiCall("loadDashboardData",{dias:31}); }
+async function loadDashboardData(){ if(APP_CONFIG.useDemoData) return demoDelay(S); return apiCall("loadDashboardData"); }
 async function loadAgents(){ if(APP_CONFIG.useDemoData) return demoDelay(S.agents,0); return apiCall("loadAgents"); }
 async function saveAgent(agent){
   if(APP_CONFIG.useDemoData){ const i=S.agents.findIndex(a=>a.id===agent.id); if(i>=0) S.agents[i]=agent; else S.agents.push(agent); persist(); return demoDelay(agent,150); }
-  const isNew=!S.agents.some(x=>x.id===agent.id);
- const r=await apiCall("saveAgent",{agent:{id:isNew?"":agent.id,first:agent.first,last:agent.last,dni:agent.dni,phone:agent.phone,photoUrl:agent.photoUrl,status:agent.status,unitId:agent.unitId,shift:agent.shift,start:agent.start,notes:agent.notes}});
- const i=S.agents.findIndex(x=>x.id===r.agent.id); if(i>=0) S.agents[i]=r.agent; else S.agents.push(r.agent);
- Object.assign(agent,r.agent); return r.agent;
+  return apiCall("saveAgent",{agent});
 }
 async function loadReports(f){ if(APP_CONFIG.useDemoData) return demoDelay(S.evidences,0); return apiCall("loadReports",f); }
-async function saveReportReview(review){ if(APP_CONFIG.useDemoData){ persist(); return demoDelay(review,100); } if(!review||!review.key) return {ok:true}; return apiCall("saveReportReview",review); }
+async function saveReportReview(review){ if(APP_CONFIG.useDemoData){ persist(); return demoDelay(review,100); } return apiCall("saveReportReview",review); }
 async function loadAdministrativeRecords(f){ if(APP_CONFIG.useDemoData) return demoDelay(S.concepts,0); return apiCall("loadAdministrativeRecords",f); }
 async function saveAdministrativeRecord(rec){
   if(APP_CONFIG.useDemoData){ const i=S.concepts.findIndex(c=>c.id===rec.id); if(i>=0) S.concepts[i]=rec; else S.concepts.unshift(rec); persist(); return demoDelay(rec,150); }
@@ -514,7 +499,6 @@ async function saveAdministrativeRecord(rec){
 }
 async function loadAgentHistory(id){ if(APP_CONFIG.useDemoData) return demoDelay(S.audit.filter(a=>a.record===id),0); return apiCall("loadAgentHistory",{id}); }
 async function uploadAgentPhoto(agentId, file){
-if(isLive()) throw new Error("La carga de fotos no está disponible en esta etapa: use una URL https.");
   // En producción: enviar base64 a Apps Script → DriveApp.getFolderById(driveFolderId).createFile(...)
   // y guardar en el agente la URL/ID estable devuelto por el servidor.
   if(APP_CONFIG.useDemoData) throw new Error("La subida a Google Drive requiere el backend. En modo demostración la foto es solo una vista previa local.");
@@ -562,7 +546,6 @@ const NAV = [
   {g:"Gestión",items:[["personal","Personal","users"],["unidades","Unidades","building-2"],["conceptos","Descuentos y conceptos","file-warning"],["calendario","Calendario","calendar-days"]]},
   {g:"Informes",items:[["exportar","Exportaciones","file-down"],["informes","Informes","bar-chart-3"],["auditoria","Auditoría","history"],["config","Configuración","settings"]]}
 ];
-function navGroups(){ return isLive()? NAV.map(g=>({g:g.g,items:g.items.filter(i=>!HIDDEN_LIVE.includes(i[0]))})).filter(g=>g.items.length) : NAV; }
 const TITLES = Object.fromEntries(NAV.flatMap(g=>g.items.map(i=>[i[0],i[1]])));
 let current = "dashboard";
 const F = {}; // filtros por vista
@@ -570,13 +553,13 @@ function counts(){ return { revisiones: reviewCases().length, evidencias: S.evid
 function renderNav(){
   const c = counts();
   $("#sidebar").innerHTML = `<div class="brand"><div class="brand-logo">${ic("shield")}</div><div><b>${esc(APP_CONFIG.appName)}</b><small>Panel administrativo</small></div></div>` +
-    navGroups().map(g=>`<div class="nav-group">${g.g}</div>`+g.items.map(([id,l,i])=>`<button class="nav-btn ${current===id?"active":""}" data-act="go" data-v="${id}">${ic(i)}<span>${l}</span>${c[id]?`<span class="count">${c[id]}</span>`:""}</button>`).join("")).join("") +
-    `<div class="spacer"></div><div class="notice" style="margin-top:14px">${ic("flask-conical")}<div>${APP_CONFIG.useDemoData?"Trabajando con <b>datos ficticios</b> de demostración.":`Conectado al backend como <b>${esc(CURRENT_USER)}</b>.`}</div></div>${APP_CONFIG.useDemoData?"":`<div style="display:flex;gap:8px;margin-top:8px"><button class="btn sm" data-act="reload">${ic("refresh-cw")}Actualizar</button><button class="btn sm" data-act="logout">${ic("log-out")}Salir</button></div>`}`;
+    NAV.map(g=>`<div class="nav-group">${g.g}</div>`+g.items.map(([id,l,i])=>`<button class="nav-btn ${current===id?"active":""}" data-act="go" data-v="${id}">${ic(i)}<span>${l}</span>${c[id]?`<span class="count">${c[id]}</span>`:""}</button>`).join("")).join("") +
+    `<div class="spacer"></div><div class="notice" style="margin-top:14px">${ic("flask-conical")}<div>${APP_CONFIG.useDemoData?"Trabajando con <b>datos ficticios</b> de demostración.":"Modo conectado: los datos provienen del backend."}</div></div>`;
   const mob=[["dashboard","Inicio","layout-dashboard"],["control","Horario","clock"],["revisiones","Revisar","shield-check"],["personal","Personal","users"]];
   $("#mobileNav").innerHTML = mob.map(([id,l,i])=>`<button class="${current===id?"active":""}" data-act="go" data-v="${id}">${ic(i)}<span>${l}</span></button>`).join("") + `<button class="${mob.some(m=>m[0]===current)?"":"active"}" data-act="moreNav">${ic("grid-2x2")}<span>Más</span></button>`;
   $("#modePill").innerHTML = APP_CONFIG.useDemoData? `<span class="mode-pill demo"><i></i>Modo demostración</span>` : `<span class="mode-pill live"><i></i>Conectado al backend</span>`;
 }
-function go(v){ if(isLive()&&HIDDEN_LIVE.includes(v)){ toast("Módulo no disponible en el control de reportes.","info"); return; } current=v; render(); window.scrollTo({top:0,behavior:"smooth"}); }
+function go(v){ current=v; render(); window.scrollTo({top:0,behavior:"smooth"}); }
 function render(){
   renderNav(); $("#viewTitle").textContent = TITLES[current]||"";
   $("#viewSub").textContent = new Intl.DateTimeFormat("es-PE",{timeZone:APP_CONFIG.timezone,weekday:"long",day:"numeric",month:"long",year:"numeric"}).format(new Date()) + " · " + APP_CONFIG.timezone;
@@ -687,25 +670,25 @@ VIEWS.control = {
 };
 
 /* ---------- Evidencias ---------- */
-F.evid={tab:"all",agent:"",unit:"",date:"",shift:"",status:"",type:"",sync:"",dni:"",sel:[]};
+F.evid={tab:"all",agent:"",unit:"",date:"",shift:"",status:"",sel:[]};
 VIEWS.evidencias = {
   html(){ const f=F.evid; const un=S.evidences.filter(e=>!e.slotKey).length;
     return `<div class="tabs"><button class="tab ${f.tab==="all"?"active":""}" data-act="setF" data-k="evid.tab" data-val="all">Todas</button><button class="tab ${f.tab==="un"?"active":""}" data-act="setF" data-k="evid.tab" data-val="un">Pendientes de asignación (${un})</button></div>
     <div class="glass toolbar"><select data-f="evid.agent">${agentOpts(f.agent,"Todos los agentes")}</select><select data-f="evid.unit">${unitOpts(f.unit,"Todas las unidades")}</select>
     <input type="date" data-f="evid.date" value="${f.date}" aria-label="Fecha"><select data-f="evid.shift">${opts([["D","Diurno"],["N","Nocturno"]],f.shift,"Ambos turnos")}</select>
-    <select data-f="evid.status">${opts(["Sin asignar","Asignada","Aceptada"],f.status,"Todos los estados")}</select>${isLive()?`<select data-f="evid.type">${opts(["Fotografía","Video"],f.type,"Foto y video")}</select><select data-f="evid.sync">${opts([["COMPLETA","Envío completo"],["EN_CURSO","Subida incompleta"],["ERROR_TAMANO","Error de tamaño"]],f.sync,"Todo estado de envío")}</select><input type="text" data-f="evid.dni" value="${esc(f.dni||"")}" placeholder="DNI" inputmode="numeric" aria-label="DNI" style="max-width:130px">`:""}<div class="spacer"></div>
+    <select data-f="evid.status">${opts(["Sin asignar","Asignada","Aceptada"],f.status,"Todos los estados")}</select><div class="spacer"></div>
     ${f.tab==="un"?`<button class="btn primary" data-act="assignSelected" ${f.sel.length?"":"disabled"}>${ic("link")}Asignar seleccionadas (${f.sel.length})</button>`:""}</div>
-    <div class="notice" style="margin-bottom:14px">${ic("send")}<div>${isLive()?"Evidencias reales enviadas desde Reporte Guardia. Los archivos permanecen privados en Drive: se abren con una cuenta autorizada.":"Las evidencias mostradas son <b>ficticias</b>."}</div></div>
+    <div class="notice" style="margin-bottom:14px">${ic("send")}<div>Las evidencias mostradas son <b>ficticias</b>. La recepción real desde Telegram${APP_CONFIG.telegramBotUsername?` (@${esc(APP_CONFIG.telegramBotUsername)})`:""} se habilitará mediante Google Apps Script (webhook del bot).</div></div>
     <div id="list">${this.list()}</div>`; },
-  list(){ const f=F.evid; let rows=S.evidences.filter(e=>(f.tab!=="un"||!e.slotKey)&&(!f.agent||e.agentId===f.agent)&&(!f.unit||e.unitId===f.unit)&&(!f.date||e.opDate===f.date)&&(!f.shift||e.shift===f.shift)&&(!f.status||e.status===f.status)&&(!f.type||e.type===f.type)&&(!f.sync||e.syncStatus===f.sync)&&(!f.dni||String(e.dni||agentById(e.agentId)?.dni||"").includes(f.dni)));
+  list(){ const f=F.evid; let rows=S.evidences.filter(e=>(f.tab!=="un"||!e.slotKey)&&(!f.agent||e.agentId===f.agent)&&(!f.unit||e.unitId===f.unit)&&(!f.date||e.opDate===f.date)&&(!f.shift||e.shift===f.shift)&&(!f.status||e.status===f.status));
     rows=rows.slice().sort((a,b)=>b.receivedAt.localeCompare(a.receivedAt)); const total=rows.length; rows=rows.slice(0,60);
     if(!rows.length) return empty();
     return `<div class="grid g-cards">${rows.map(e=>{ const a=agentById(e.agentId), iv=e.slotKey?S.intervals[e.slotKey]:null, sel=f.sel.includes(e.id);
       return `<div class="glass ev ${sel?"selected":""}"><div class="thumb">${ic(e.type==="Video"?"video":"image")}<span class="tag">${cBadge(e.status)}</span>${!e.slotKey?`<label class="sel"><input type="checkbox" data-act="toggleSel" data-id="${e.id}" ${sel?"checked":""} aria-label="Seleccionar evidencia"></label>`:""}<small style="position:absolute;bottom:8px;left:8px" class="demo-tag">Demostración</small></div>
       <div class="body">${who(a,e.id+" · DNI "+(a?.dni||""))}<div class="muted">${esc(unitById(e.unitId)?.name)} · ${shiftName(e.shift)} · ${e.type}</div>
       <div>Fecha operativa: <b>${fmtDate(e.opDate)}</b></div><div>Intervalo: <b>${iv?esc(slotsFor(iv.shift)[iv.idx].label):"Sin asignar"}</b></div>
-      ${isLive()?`<div>Captura: <b>${fmtDT(e.capturedAt)}</b></div>`:""}<div>Recibido: <b>${fmtDT(e.receivedAt)}</b></div>${e.gps?`<div class="muted">${ic("map-pin","")} ${esc(e.gps)} · ${esc(e.address)}</div>`:`<div class="dim">Sin GPS</div>`}
-      ${isLive()?`<div>Envío: <b>${esc(syncLabel(e.syncStatus))}</b> · ${driveLink(e)}</div>`:`<div class="dim">Telegram: ${e.telegramRef?esc(e.telegramRef):"sin referencia (demo)"}</div>`}
+      <div>Recibido: <b>${fmtDT(e.receivedAt)}</b></div>${e.gps?`<div class="muted">${ic("map-pin","")} ${esc(e.gps)} · ${esc(e.address)}</div>`:`<div class="dim">Sin GPS</div>`}
+      <div class="dim">Telegram: ${e.telegramRef?esc(e.telegramRef):"sin referencia (demo)"}</div>
       <button class="btn sm" data-act="evDetail" data-id="${e.id}" style="align-self:flex-start;margin-top:4px">Ver detalle</button></div></div>`; }).join("")}</div>${total>60?`<p class="muted" style="text-align:center">Mostrando 60 de ${total}. Usa los filtros para acotar.</p>`:""}`; }
 };
 
@@ -828,7 +811,7 @@ VIEWS.config = {
       ${fld("telegramBotUsername","Usuario del bot de Telegram","Solo el @usuario (referencia visible). Sin token.","mi_bot")}
       ${fld("defaultPhotoUrl","URL de fotografía por defecto","Se usa cuando un agente no tiene foto.","https://…/avatar.png")}
       <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" data-cfg="useDemoData" ${c.useDemoData?"checked":""}> Usar datos de demostración</label></div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:14px"><button class="btn primary" data-act="saveCfg">${ic("save")}Guardar configuración</button><button class="btn" data-act="testConn">${ic("plug")}Probar conexión</button><button class="btn danger" data-act="resetDemo">${ic("rotate-ccw")}Restablecer datos demo</button></div><div style="margin-top:14px;font-size:12px;opacity:.6">Versión del panel: control de reportes · 2026-10-12 (r2) · modo ${APP_CONFIG.useDemoData?"demostración":"conectado"}</div></div></div>`; }
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:14px"><button class="btn primary" data-act="saveCfg">${ic("save")}Guardar configuración</button><button class="btn" data-act="testConn">${ic("plug")}Probar conexión</button><button class="btn danger" data-act="resetDemo">${ic("rotate-ccw")}Restablecer datos demo</button></div></div></div>`; }
 };
 
 /* =====================================================================
@@ -847,10 +830,9 @@ function editUnit(id){ const u=id?unitById(id):{id:"",name:"",address:"",supervi
     <div class="field full" id="w-ush"><label>Turnos configurados *</label><div class="chips"><label><input type="checkbox" id="ushD" ${u.shifts.includes("D")?"checked":""}> Diurno</label><label><input type="checkbox" id="ushN" ${u.shifts.includes("N")?"checked":""}> Nocturno</label></div><span class="err"></span></div>
     <div class="field full"><label for="uo">Observaciones</label><textarea id="uo">${esc(u.notes)}</textarea></div></div>`,
     `<button class="btn" data-act="closeModal">Cancelar</button><button class="btn primary" data-act="saveUnit" data-id="${u.id}">Guardar</button>`); }
-async function saveUnit(id){ const name=val("un"); const sh=[$("#ushD").checked&&"D",$("#ushN").checked&&"N"].filter(Boolean);
+function saveUnit(id){ const name=val("un"); const sh=[$("#ushD").checked&&"D",$("#ushN").checked&&"N"].filter(Boolean);
   setInvalid("w-un",name.length<3?"Ingresa un nombre (mínimo 3 caracteres).":""); setInvalid("w-ush",sh.length?"":"Selecciona al menos un turno."); if(name.length<3||!sh.length) return;
-if(isLive()){ try{ const prev=id?unitById(id):null; const r=await apiCall("saveUnit",{unit:{id:id||"",code:prev?.code||"",name,address:val("ua"),supervisor:val("us"),active:val("ust")==="1",shifts:sh,notes:val("uo")}}); const i=S.units.findIndex(x=>x.id===r.unit.id); if(i>=0) S.units[i]=r.unit; else S.units.push(r.unit); closeModal(); toast("Unidad guardada."); render(); }catch(e){ toast("No se pudo guardar: "+e.message,"err"); } return; }
-const u = id?unitById(id):{id:"U-"+pad(S.units.length+1).padStart(3,"0")}; Object.assign(u,{name,address:val("ua"),supervisor:val("us"),active:val("ust")==="1",shifts:sh,notes:val("uo")});
+  const u = id?unitById(id):{id:"U-"+pad(S.units.length+1).padStart(3,"0")}; Object.assign(u,{name,address:val("ua"),supervisor:val("us"),active:val("ust")==="1",shifts:sh,notes:val("uo")});
   if(!id) S.units.push(u); audit(CURRENT_USER,id?"Unidad editada":"Unidad registrada",u.id,u.name); persist(); closeModal(); toast("Unidad guardada (demostración)."); render(); }
 
 // --- Agentes
@@ -894,7 +876,7 @@ async function saveAgentBtn(id){
   if(photoDraft.file){ try{ const r=await uploadAgentPhoto(a.id,photoDraft.file); if(r?.url){ a.photoUrl=r.url; a.photoLocal=""; } }catch(e){ toast(e.message,"info"); } }
   try{ await saveAgent(a); }catch(e){ return toast("No se pudo guardar: "+e.message,"err"); }
   const changed = prev? Object.keys(a).filter(k=>k!=="assignments"&&k!=="photoLocal"&&JSON.stringify(a[k])!==JSON.stringify(prev[k])).join(", ") : "Alta";
-  audit(CURRENT_USER,prev?"Agente editado":"Alta de agente",a.id,prev?("Campos: "+(changed||"sin cambios")):fullName(a)); persist(); closeModal(); toast(isLive()?"Agente guardado.":"Agente guardado (demostración)."); render(); }
+  audit(CURRENT_USER,prev?"Agente editado":"Alta de agente",a.id,prev?("Campos: "+(changed||"sin cambios")):fullName(a)); persist(); closeModal(); toast("Agente guardado (demostración)."); render(); }
 
 // --- Perfil
 let profTab="info";
@@ -935,30 +917,19 @@ function openCase(key){ const iv=S.intervals[key]; if(!iv) return; const a=agent
     `${ev?`<button class="btn ok" data-act="caseDo" data-k="${esc(key)}" data-do="accept">Aceptar evidencia</button>`:""}
      ${iv.justification?.status==="Pendiente"?`<button class="btn ok" data-act="caseDo" data-k="${esc(key)}" data-do="approve">Aprobar justificación</button><button class="btn danger" data-act="caseDo" data-k="${esc(key)}" data-do="reject">Rechazar justificación</button>`:""}
      <button class="btn" data-act="caseDo" data-k="${esc(key)}" data-do="keep">Mantener pendiente</button>
-     <button class="btn danger" data-act="caseDo" data-k="${esc(key)}" data-do="confirm">Confirmar incumplimiento</button>`,"lg"); liveTrimCase(); }
-async function doAssign(ev,iv){
-  if(ev.slotKey) throw new Error(`La evidencia ${ev.id} ya está asignada a otro intervalo.`);
-  if(iv.evidenceId) throw new Error("El intervalo ya tiene una evidencia asignada.");
-  if(isLive()){ const r=await apiCall("assignEvidence",{evidenceId:ev.id,key:iv.key}); Object.assign(ev,r.evidence); iv.evidenceId=ev.id; if(iv.status==="Pendiente") iv.status="Recibido"; return; }
-  assignEvidence(ev,iv);
-}
-function liveTrimCase(){ if(!isLive()) return;
-  ["#cjust","#cobs"].forEach(s=>{ const el=$(s); if(el) el.closest(".field").style.display="none"; });
-  $$('#modal [data-do="approve"],#modal [data-do="reject"],#modal [data-do="confirm"]').forEach(b=>b.style.display="none");
-  const kb=$('#modal [data-do="keep"]'); const iv=S.intervals[kb?.dataset.k]; if(kb&&iv&&!iv.evidenceId) kb.style.display="none"; }
+     <button class="btn danger" data-act="caseDo" data-k="${esc(key)}" data-do="confirm">Confirmar incumplimiento</button>`,"lg"); }
 function ivLog(iv,text){ iv.history.push({at:new Date().toISOString(),by:CURRENT_USER,text}); audit(CURRENT_USER,text,iv.agentId,`${fmtDate(iv.opDate)} ${slotsFor(iv.shift)[iv.idx].label}`); }
 function assignEvidence(ev,iv){ if(ev.slotKey) throw new Error(`La evidencia ${ev.id} ya está asignada a otro intervalo.`); if(iv.evidenceId) throw new Error("El intervalo ya tiene una evidencia asignada.");
   ev.slotKey=iv.key; ev.status="Asignada"; iv.evidenceId=ev.id; if(iv.status==="Pendiente") iv.status="Recibido"; // receivedAt se conserva intacto
   ivLog(iv,`Evidencia ${ev.id} asignada (recibida ${fmtDT(ev.receivedAt)})`); }
 async function caseDo(key,what){ const iv=S.intervals[key]; const L={accept:["Aceptar evidencia","El intervalo quedará como Aceptado."],approve:["Aprobar justificación","El intervalo quedará Justificado y no generará descuento."],reject:["Rechazar justificación","La justificación quedará rechazada."],keep:["Mantener pendiente","El caso seguirá abierto."],confirm:["Confirmar incumplimiento","Se registrará el incumplimiento. No se generará ningún descuento automático."]}[what];
   if(!await confirmDlg(L[0],`<p>${L[1]}</p>`,L[0],what==="confirm"||what==="reject")) return;
-if(isLive()){ if(!["accept","keep"].includes(what)) return toast("Acción no disponible en el control de reportes.","info"); try{ await saveReportReview({key,action:what}); }catch(e){ return toast(e.message,"err"); } }
   if(what==="accept"){ iv.status="Aceptado"; const e=S.evidences.find(x=>x.id===iv.evidenceId); if(e) e.status="Aceptada"; }
   if(what==="approve"){ iv.justification.status="Aprobada"; iv.status="Justificado"; }
   if(what==="reject"){ iv.justification.status="Rechazada"; if(iv.status==="Justificado") iv.status="Pendiente"; }
   if(what==="keep"){ iv.status = iv.evidenceId?"En revisión":"Pendiente"; }
   if(what==="confirm"){ iv.status="Incumplimiento confirmado"; }
-  ivLog(iv,L[0]); if(!isLive()) await saveReportReview({key,action:what}); closeModal(); toast(L[0]+" registrado."); render();
+  ivLog(iv,L[0]); await saveReportReview({key,action:what}); closeModal(); toast(L[0]+" registrado."); render();
   if(what==="confirm" && await confirmDlg("¿Registrar concepto administrativo?","<p>Puedes registrar una <b>Falta de reporte por hora</b> en estado Pendiente y sin importe. La autorización se hará por separado.</p>","Registrar concepto")) newConcept({type:"Falta de reporte por hora",agentId:iv.agentId,factDate:iv.opDate,desc:`Intervalo ${slotsFor(iv.shift)[iv.idx].label} sin reporte.`}); }
 
 // --- Asignación por lote
@@ -972,14 +943,12 @@ async function confirmAssign(){ const picks=$$("[data-asg]").map(s=>({e:s.datase
   if(!chosen.length){ err.style.display="flex"; err.textContent="Selecciona al menos un intervalo."; return; }
   if(new Set(keys).size!==keys.length){ err.style.display="flex"; err.textContent="No puedes asignar dos evidencias al mismo intervalo."; return; }
   if(!await confirmDlg("Confirmar asignación",`<p>Se asignarán ${chosen.length} evidencia(s). Esta acción quedará en el historial.</p>`)) return;
-  try{ for(const p of chosen) await doAssign(S.evidences.find(e=>e.id===p.e),S.intervals[p.k]); }catch(e){ F.evid.sel=[]; render(); return toast(e.message,"err"); }
+  try{ chosen.forEach(p=>assignEvidence(S.evidences.find(e=>e.id===p.e),S.intervals[p.k])); }catch(e){ return toast(e.message,"err"); }
   F.evid.sel=[]; await saveReportReview({batch:chosen}); closeModal(); toast(`${chosen.length} evidencia(s) asignada(s).`); render(); }
 
-function syncLabel(s){ return {COMPLETA:"Enviada completa",EN_CURSO:"Subida incompleta",ERROR_TAMANO:"Error de tamaño"}[s]||s||"—"; }
-function driveLink(e){ return e.driveUrl&&e.driveUrl.startsWith("https://drive.google.com/")?`<a href="${esc(e.driveUrl)}" target="_blank" rel="noopener noreferrer">Abrir en Drive</a>`:'<span class="dim">Sin archivo en Drive</span>'; }
 function evDetail(id){ const e=S.evidences.find(x=>x.id===id), a=agentById(e.agentId), iv=e.slotKey&&S.intervals[e.slotKey];
-  openModal("Detalle de evidencia "+e.id,`<div class="ev glass" style="margin-bottom:14px"><div class="thumb" style="aspect-ratio:16/7">${ic(e.type==="Video"?"video":"image")}${isLive()?"":'<span class="tag demo-tag">Evidencia ficticia: sin archivo real</span>'}</div></div>
-   ${who(a)}<dl class="kv" style="margin-top:12px"><dt>ID</dt><dd>${e.id}</dd><dt>DNI</dt><dd>${esc(a?.dni)}</dd><dt>Unidad</dt><dd>${esc(unitById(e.unitId)?.name)}</dd><dt>Turno</dt><dd>${shiftName(e.shift)}</dd><dt>Fecha operativa</dt><dd>${fmtDate(e.opDate)}</dd><dt>Intervalo asignado</dt><dd>${iv?slotsFor(iv.shift)[iv.idx].label:"Sin asignar"}</dd>${isLive()?`<dt>Hora de captura</dt><dd>${fmtDT(e.capturedAt)}</dd><dt>Registrada en el servidor</dt><dd>${fmtDT(e.registeredAt)}</dd><dt>Franja programada</dt><dd>${esc(e.scheduledTime||"Sin franja")} <span class="dim">(${esc(e.slotState||"—")})</span></dd><dt>Estado de envío</dt><dd>${esc(syncLabel(e.syncStatus))} · ${Math.round((e.bytes||0)/1024)} KB</dd><dt>Archivo</dt><dd>${driveLink(e)}</dd>`:""}<dt>Recepción real</dt><dd>${fmtDT(e.receivedAt)}</dd><dt>Tipo</dt><dd>${e.type}</dd><dt>GPS</dt><dd>${esc(e.gps||"—")}</dd><dt>Dirección</dt><dd>${esc(e.address||"—")}</dd><dt>Estado</dt><dd>${cBadge(e.status)}</dd><dt>Observaciones</dt><dd>${esc(e.notes||"—")}</dd>${isLive()?"":`<dt>Mensaje Telegram</dt><dd>${esc(e.telegramRef||"Sin referencia (demo)")}</dd>`}</dl>`,
+  openModal("Detalle de evidencia "+e.id,`<div class="ev glass" style="margin-bottom:14px"><div class="thumb" style="aspect-ratio:16/7">${ic(e.type==="Video"?"video":"image")}<span class="tag demo-tag">Evidencia ficticia: sin archivo real</span></div></div>
+   ${who(a)}<dl class="kv" style="margin-top:12px"><dt>ID</dt><dd>${e.id}</dd><dt>DNI</dt><dd>${esc(a?.dni)}</dd><dt>Unidad</dt><dd>${esc(unitById(e.unitId)?.name)}</dd><dt>Turno</dt><dd>${shiftName(e.shift)}</dd><dt>Fecha operativa</dt><dd>${fmtDate(e.opDate)}</dd><dt>Intervalo asignado</dt><dd>${iv?slotsFor(iv.shift)[iv.idx].label:"Sin asignar"}</dd><dt>Recepción real</dt><dd>${fmtDT(e.receivedAt)}</dd><dt>Tipo</dt><dd>${e.type}</dd><dt>GPS</dt><dd>${esc(e.gps||"—")}</dd><dt>Dirección</dt><dd>${esc(e.address||"—")}</dd><dt>Estado</dt><dd>${cBadge(e.status)}</dd><dt>Observaciones</dt><dd>${esc(e.notes||"—")}</dd><dt>Mensaje Telegram</dt><dd>${esc(e.telegramRef||"Sin referencia (demo)")}</dd></dl>`,
    iv?`<button class="btn primary" data-act="openCase" data-k="${esc(iv.key)}">Abrir intervalo</button>`:""); }
 
 // --- Conceptos
@@ -1085,7 +1054,7 @@ async function doExport(fmt){ const o=F.exp; if(o.from&&o.to&&o.from>o.to) retur
    ===================================================================== */
 const ACT = {
   go:d=>{ closeModal(); go(d.v); },
-  closeModal, moreNav:()=>openModal("Módulos",`<div class="quick">${navGroups().flatMap(g=>g.items).map(([id,l,i])=>`<button class="btn" data-act="go" data-v="${id}">${ic(i)}${l}</button>`).join("")}</div>`),
+  closeModal, moreNav:()=>openModal("Módulos",`<div class="quick">${NAV.flatMap(g=>g.items).map(([id,l,i])=>`<button class="btn" data-act="go" data-v="${id}">${ic(i)}${l}</button>`).join("")}</div>`),
   setF:d=>{ const [v,k]=d.k.split("."); F[v][k]=d.val; render(); },
   editUnit:d=>editUnit(d.id), saveUnit:d=>saveUnit(d.id),
   toggleUnit:async d=>{ const u=unitById(d.id); if(!await confirmDlg(u.active?"Desactivar unidad":"Activar unidad",`<p>${esc(u.name)}</p>`,"Confirmar",u.active)) return; u.active=!u.active; audit(CURRENT_USER,u.active?"Unidad activada":"Unidad desactivada",u.id,u.name); persist(); toast("Estado de unidad actualizado."); render(); },
@@ -1095,7 +1064,7 @@ const ACT = {
   agentSummary:d=>{ closeModal(); Object.assign(F.exp,{agent:d.id,mode:"resumen",scope:"all"}); go("exportar"); toast("Ajusta el período y descarga el resumen.","info"); },
   searchAgent:()=>{ go("personal"); setTimeout(()=>$("#agentSearch")?.focus(),50); },
   openCase:d=>openCase(d.k), caseDo:d=>caseDo(d.k,d.do),
-  caseAssign:async d=>{ if(!await confirmDlg("Asignar evidencia","<p>La hora real de recepción se conservará.</p>")) return; try{ await doAssign(S.evidences.find(e=>e.id===d.e),S.intervals[d.k]); await saveReportReview({}); toast("Evidencia asignada."); openCase(d.k); renderNav(); }catch(e){ toast(e.message,"err"); } },
+  caseAssign:async d=>{ if(!await confirmDlg("Asignar evidencia","<p>La hora real de recepción se conservará.</p>")) return; try{ assignEvidence(S.evidences.find(e=>e.id===d.e),S.intervals[d.k]); await saveReportReview({}); toast("Evidencia asignada."); openCase(d.k); renderNav(); }catch(e){ toast(e.message,"err"); } },
   caseMove:async d=>{ const from=S.intervals[d.k], to=S.intervals[$("#mvTo").value]; const ev=S.evidences.find(e=>e.id===from.evidenceId); if(!to||!ev) return;
     if(!await confirmDlg("Mover evidencia",`<p>${ev.id} pasará al intervalo ${fmtDate(to.opDate)} ${slotsFor(to.shift)[to.idx].label}.</p>`)) return;
     from.evidenceId=null; from.status="Pendiente"; ivLog(from,`Evidencia ${ev.id} retirada`); ev.slotKey=null; try{ assignEvidence(ev,to); }catch(e){ return toast(e.message,"err"); } await saveReportReview({}); toast("Evidencia reasignada."); openCase(to.key); },
@@ -1129,22 +1098,6 @@ const ACT = {
   testConn:async()=>{ try{ await apiCall("ping"); toast("Conexión con Apps Script correcta."); }catch(e){ toast(e.message,"err"); } },
   resetDemo:async()=>{ if(!await confirmDlg("Restablecer datos demo","<p>Se borrarán los cambios locales y se regenerarán los datos ficticios.</p>","Restablecer",true)) return; localStorage.removeItem(STATE_KEY); seedDemo(); persist(); toast("Datos de demostración regenerados."); render(); }
 };
-ACT.doLogin=async()=>{ const u=val("lu"), p=($("#lp")||{}).value||""; if(!u||!p) return toast("Escribe usuario y clave.","err");
-  try{ const r=await apiCall("login",{usuario:u,clave:p}); SESSION.set(r.token,r.nombre,r.rol); $("#lp").value=""; await loadLive(); }catch(e){ toast(e.message,"err"); } };
-ACT.logout=async()=>{ try{ await apiCall("logout"); }catch(e){} SESSION.clear(); S=null; showLogin(); };
-ACT.reload=()=>loadLive();
-ACT.retryLoad=()=>{ SESSION.token?loadLive():showLogin(); };
-["newConcept","editConcept","saveConcept","conceptDetail","cStatus","exportOne","doExport","calMove","newCal","editCal","saveCal","delCal","caseJust","caseObs","resetDemo","exportCSV"].forEach(k=>{ const f=ACT[k]; ACT[k]=(...a)=>{ if(isLive()){ toast("Función no disponible en el control de reportes.","info"); return; } return f(...a); }; });
-{ const _tu=ACT.toggleUnit; ACT.toggleUnit=async d=>{ if(!isLive()) return _tu(d); const u=unitById(d.id); if(!await confirmDlg(u.active?"Desactivar unidad":"Activar unidad",`<p>${esc(u.name)}</p>`,"Confirmar",u.active)) return;
-  try{ const r=await apiCall("saveUnit",{unit:{id:u.id,code:u.code||"",name:u.name,address:u.address,supervisor:u.supervisor,active:!u.active,shifts:u.shifts,notes:u.notes}}); Object.assign(u,r.unit); toast("Estado de unidad actualizado."); render(); }catch(e){ toast(e.message,"err"); } }; }
-{ const _cm=ACT.caseMove; ACT.caseMove=async d=>{ if(!isLive()) return _cm(d); const from=S.intervals[d.k], to=S.intervals[$("#mvTo").value]; const ev=S.evidences.find(e=>e.id===from.evidenceId); if(!to||!ev) return;
-  if(!await confirmDlg("Mover evidencia",`<p>${ev.id} pasará al intervalo ${fmtDate(to.opDate)} ${slotsFor(to.shift)[to.idx].label}.</p>`)) return;
-  try{ await apiCall("assignEvidence",{evidenceId:ev.id,key:null}); }catch(e){ return toast(e.message,"err"); }
-  from.evidenceId=null; from.status="Pendiente"; ev.slotKey=null; ev.status="Sin asignar";
-  try{ await doAssign(ev,to); }catch(e){ render(); return toast("Se retiró de la franja anterior pero no se pudo asignar a la nueva: "+e.message,"err"); }
-  toast("Evidencia reasignada."); openCase(to.key); }; }
-{ const _sc=ACT.saveCfg; ACT.saveCfg=()=>{ const prev=APP_CONFIG.useDemoData; _sc(); if(prev!==APP_CONFIG.useDemoData) setTimeout(()=>location.reload(),600); }; }
-document.addEventListener("keydown",e=>{ if(e.key==="Enter"&&e.target&&e.target.id==="lp") ACT.doLogin(); });
 document.addEventListener("click",e=>{ const el=e.target.closest("[data-act]"); if(!el) return; if(el.tagName==="INPUT"&&el.type==="checkbox"&&el.dataset.act!=="toggleSel") return; const fn=ACT[el.dataset.act]; if(fn){ if(el.tagName!=="INPUT") e.preventDefault(); fn(el.dataset,el,e); } });
 document.addEventListener("keydown",e=>{ if(e.key==="Escape"){ if($("#confirmOv").classList.contains("open")) return; closeModal(); } if(e.key==="Enter"&&e.target.matches(".stat,.day")) e.target.click(); });
 function onFilter(e){ const el=e.target.closest("[data-f]"); if(!el) return; const [v,k]=el.dataset.f.split("."); F[v][k]=el.type==="checkbox"?el.checked:el.value;
@@ -1158,35 +1111,13 @@ function applyBg(){ const u=APP_CONFIG.backgroundImageUrl; document.body.classLi
 /* =====================================================================
    11. ARRANQUE
    ===================================================================== */
-function showLogin(msg){ closeModal(); $("#sidebar").innerHTML=""; $("#mobileNav").innerHTML=""; $("#viewTitle").textContent="Acceso"; $("#viewSub").textContent="";
-  $("#view").innerHTML=`<div class="glass live-login"><h2 style="margin-bottom:12px">Acceso de supervisor</h2>${msg?`<div class="notice red" style="margin-bottom:12px">${esc(msg)}</div>`:""}<div class="field" id="w-lu"><label for="lu">Usuario</label><input id="lu" autocomplete="username" autocapitalize="none"></div><div class="field" style="margin-top:10px"><label for="lp">Clave</label><input id="lp" type="password" autocomplete="current-password"></div><button class="btn primary" data-act="doLogin" style="margin-top:14px;width:100%">Entrar</button></div>`; }
-function showFatal(m){ $("#view").innerHTML=`<div class="glass live-login" style="max-width:520px"><h2 style="margin-bottom:8px">No se pudo cargar</h2><p class="muted">${esc(m)}</p><button class="btn primary" data-act="retryLoad" style="margin-top:12px">Reintentar</button></div>`; }
-function liveState(d){
-  const c=d.config||{};
-  if(c.shifts) Object.keys(c.shifts).forEach(k=>{ if(APP_CONFIG.shifts[k]){ APP_CONFIG.shifts[k].start=c.shifts[k].start; APP_CONFIG.shifts[k].count=c.shifts[k].count; } });
-  LIVE.desde=d.desde; LIVE.hasta=d.hasta;
-  S={units:d.units||[],agents:d.agents||[],intervals:{},evidences:d.evidences||[],concepts:[],calendar:[],docs:[],audit:d.audit||[]};
-  for(let day=d.desde; day<=d.hasta; day=addDays(day,1)) ensureIntervals(day);
-  S.evidences.forEach(ev=>{ if(!ev.slotKey) return; let iv=S.intervals[ev.slotKey];
-    if(!iv){ const a=agentById(ev.agentId); if(!a) return; const m=ev.slotKey.split("|"); iv=mkInterval(m[0],a,+m[2]); }
-    iv.evidenceId=ev.id; iv.status=ev.review==="Aceptado"?"Aceptado":(ev.review==="En revisión"?"En revisión":"Recibido"); });
-}
-async function loadLive(){
-  $("#view").innerHTML=`<div class="loading"><div class="spin"></div>Cargando datos…</div>`;
-  try{ const d=await loadDashboardData(); liveState(d); CURRENT_USER=SESSION.name||CURRENT_USER; render(); }
-  catch(e){ if(e.authRequired) return; showFatal(e.message); }
-}
 (async function boot(){
-$("#view").innerHTML=`<div class="loading"><div class="spin"></div>Cargando datos…</div>`; applyBg();
-document.body.classList.toggle("live",isLive());
-if(isLive()){
-  if(!isValidUrl(APP_CONFIG.googleAppsScriptUrl)){ showFatal("Falta la URL del despliegue de Apps Script (googleAppsScriptUrl)."); return; }
-  if(!SESSION.token){ showLogin(); return; }
-  await loadLive(); return;
-}
-try{ const saved=JSON.parse(localStorage.getItem(STATE_KEY)||"null"); if(saved&&saved.agents) S=saved; }catch(e){}
-if(!S){ seedDemo(); persist(); }
-render();
+  $("#view").innerHTML=`<div class="loading"><div class="spin"></div>Cargando datos…</div>`; applyBg();
+  try{ const saved=JSON.parse(localStorage.getItem(STATE_KEY)||"null"); if(saved&&saved.agents) S=saved; }catch(e){}
+  if(!S){ seedDemo(); persist(); }
+  try{ if(!APP_CONFIG.useDemoData){ const d=await loadDashboardData(); if(d&&d.agents) S=d; } }
+  catch(e){ toast("No se pudo cargar desde el backend: "+e.message+" Se muestran datos de demostración.","err"); APP_CONFIG.useDemoData=true; }
+  render();
 })();
 </script>
 </body>
